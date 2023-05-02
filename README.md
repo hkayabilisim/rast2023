@@ -1,8 +1,8 @@
 # Evaluation of Modern Deep Learning Architectures in Remote Sensing Scene Classification
-Supplemantary Information
+This reposity is created to provide supplemantary information regarding the manuscript "Evaluation of Modern Deep Learning Architectures in Remote Sensing Scene Classification", H. Kaya and G. Taskin submitted to RAST 2023 conference.
 
 ## List of the models
-
+This is the list of deep-learning models used in the manuscript. The first column corresponds to unique id specific to this study. Please note that, there are many other models in TIMM library, but we couldn't use all of them for practical issues such as dimension mismatches or memory requirements.
 
     201 vit_base_patch16_224
     202 vit_base_patch16_224_miil
@@ -81,5 +81,50 @@ Supplemantary Information
     322 resnetv2_101x1_bitm
     324 resnetv2_152x2_bitm
 
+## Template for Fine-tuning
+We've used the following code template by replacing "MODEL_NAME" with the model names listed in the previous section. The code is run via "accelerate run" command. It can use CUDA as an accelerator without any change. Please note that you should prepare AID and RESISC45 folders in advance. It is possible to optimize the hyper-parameters a bit, but we tend to choose default options because it would be utterly difficult to optimize for each model.
 
+```python
+import timm
+from fastai.vision.all import *
+from fastai.distributed import *
+from fastai.vision.models.xresnet import *
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+from accelerate.utils import write_basic_config
+write_basic_config()
+
+path = 'AID'
+dls = DataBlock(
+    blocks=(ImageBlock, CategoryBlock),
+    splitter=RandomSplitter(valid_pct=0.5, seed=0),
+    get_items=get_image_files, get_y=parent_label,
+    item_tfms=[RandomResizedCrop(224)],
+    batch_tfms=Normalize.from_stats(*imagenet_stats)
+).dataloaders(path, path=path, bs=64)
+
+dls_test = DataBlock(
+    blocks=(ImageBlock, CategoryBlock),
+    splitter=RandomSplitter(valid_pct=0.5, seed=0),
+    get_items=get_image_files, get_y=parent_label,
+    item_tfms=[RandomResizedCrop(224)],
+    batch_tfms=Normalize.from_stats(*imagenet_stats)
+).dataloaders('RESISC45', path='RESISC45', bs=64)
+
+timm_model = timm.create_model('MODEL_NAME', pretrained=True, num_classes=30)
+for model in [timm_model]:
+    print('model',model)
+    learn = Learner(dls, model, metrics=[accuracy,top_k_accuracy]).to_fp16()
+    with learn.distrib_ctx(): 
+       learn.fit_flat_cos(300, 1e-3)
+    with learn.distrib_ctx(): 
+       learn.validate(dl=dls.valid)
+    interp = ClassificationInterpretation.from_learner(learn)
+    print(interp.confusion_matrix())
+    learn_test = Learner(dls_test, model,  metrics=accuracy).to_fp16()
+    with learn_test.distrib_ctx(): 
+       learn_test.validate(dl=dls_test.valid)
+    interp = ClassificationInterpretation.from_learner(learn_test)
+    print(interp.confusion_matrix())
+```
 
